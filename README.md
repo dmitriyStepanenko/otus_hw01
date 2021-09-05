@@ -40,8 +40,7 @@ python log_analyzer.py --config path_to_config/config.txt
 REPORT_SIZE=1100
 ```
 
-
-##Запуск тестов
+## Запуск тестов
 ```
 python -m unittest tests/test.py
 ```
