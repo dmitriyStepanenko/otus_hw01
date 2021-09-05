@@ -1,0 +1,7 @@
+[settings]
+report_size = 5
+report_dir = ./1_reports
+log_dir = ./1_log
+percent_parsing_errors = 3
+log_file_path = ./own_log
+
