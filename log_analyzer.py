@@ -8,18 +8,18 @@
 #                     '$request_time';
 import gzip
 import json
-import sys
+import argparse
 from configparser import ConfigParser
 from string import Template
 from collections import defaultdict, namedtuple
-from typing import Dict, List, IO, Union
+from typing import Dict, List, IO, Union, Tuple
 from pathlib import Path
 from io import TextIOWrapper
 import logging
 
 config = {
     "REPORT_SIZE": 1000,
-    "REPORT_DIR": "./reports",
+    "REPORT_DIR": "./log",
     "LOG_DIR": "./log",
     "PERCENT_PARSING_ERRORS": 5,
     'LOG_FILE_PATH': None
@@ -29,31 +29,38 @@ DEFAULT_CONFIG_PATH = 'config.txt'
 INT_SETTINGS = ['REPORT_SIZE', 'PERCENT_PARSING_ERRORS']
 ParsedLog = namedtuple('ParsedLog', ['requests_times_by_url', 'sum_count_requests', 'sum_requests_time'])
 FileNameWithDate = namedtuple('FileNameDate', ['name', 'date'])
-IOWithDate = namedtuple('IOWithDate', ['io', 'date'])
 ParsedLine = namedtuple('ParsedLine', ['url', 'request_time'])
 
 
 def main(configuration: Dict):
-    logging.basicConfig(
-        format='[%(asctime)s] %(levelname).1s %(message)s',
-        filename=configuration.get('LOG_FILE_PATH'),
-        level='INFO'
-    )
     try:
         configuration = update_configuration(configuration)
+        logging.basicConfig(
+            format='[%(asctime)s] %(levelname).1s %(message)s',
+            filename=configuration.get('LOG_FILE_PATH'),
+            level='INFO'
+        )
 
-        log_file_io = get_log_file_io(log_dir=configuration['LOG_DIR'], report_dir=configuration['REPORT_DIR'])
+        last_log_file = get_last_log_file_name(log_dir=configuration['LOG_DIR'])
+        last_date = last_log_file.date
+        report_name = f"report-{last_date[:4]}.{last_date[4:6]}.{last_date[6:]}.html"
 
-        if log_file_io is not None:
+        if last_log_file is None:
+            logging.info('Не обнаружено ни одного файла log-а')
+
+        elif (Path(__file__).parent / configuration['REPORT_DIR'] / report_name).exists():
+            logging.info(f'Для log-а с датой {last_log_file.date} найден ранее сформированный отчет')
+
+        else:
             parsed_log = read_and_parse_log_file_io(
-                log_file_io=log_file_io.io,
+                log_file_io=open(last_log_file.name)
+                if last_log_file.name[-3:] == 'gz' else gzip.open(last_log_file.name),
                 report_size=configuration['REPORT_SIZE'],
                 max_rel_parsing_errors=configuration['PERCENT_PARSING_ERRORS'])
 
             table = make_stats_table(log_data=parsed_log.requests_times_by_url,
                                      count_requests=parsed_log.sum_count_requests,
                                      sum_requests_time=parsed_log.sum_requests_time)
-            report_name = f'report-{log_file_io.date[:4]}.{log_file_io.date[4:6]}.{log_file_io.date[6:]}.html'
             render_and_save_report(
                 table=table,
                 path_to_report=(Path(configuration['REPORT_DIR']) / report_name).__str__())
@@ -66,15 +73,17 @@ def main(configuration: Dict):
 
 
 def update_configuration(configuration: Dict) -> Dict:
-    if len(sys.argv) in [3, 4] and sys.argv[2] == '--config':
-        config_from_file = ConfigParser()
-        found_config = config_from_file.read(
-            filenames=DEFAULT_CONFIG_PATH if len(sys.argv) == 3 else sys.argv[3],
-            encoding='utf-8')
-        if not found_config:
-            raise FileExistsError(f'Не найден файл конфигурации "{DEFAULT_CONFIG_PATH}"')
-        for key, val in config_from_file['settings'].items():
-            configuration[key.upper()] = int(val) if key.upper() in INT_SETTINGS else val
+    argparser = argparse.ArgumentParser()
+    argparser.add_argument('--config', type=str, default=DEFAULT_CONFIG_PATH)
+    args = argparser.parse_args()
+    config_from_file = ConfigParser()
+    found_config = config_from_file.read(
+        filenames=DEFAULT_CONFIG_PATH if args.config is not None else args.config,
+        encoding='utf-8')
+    if not found_config:
+        raise FileExistsError(f'Не найден файл конфигурации "{DEFAULT_CONFIG_PATH}"')
+    for key, val in config_from_file['settings'].items():
+        configuration[key.upper()] = int(val) if key.upper() in INT_SETTINGS else val
 
     return configuration
 
@@ -114,26 +123,6 @@ def get_last_log_file_name(log_dir: str) -> Union[FileNameWithDate, None]:
     return FileNameWithDate(name=last_log_file.__str__(), date=str(last_log_date)) if last_log_file else None
 
 
-def get_log_file_io(log_dir: str, report_dir: str) -> Union[IOWithDate, None]:
-    """
-    Готовит файл log-а для чтения
-    """
-    last_log_file = get_last_log_file_name(log_dir=log_dir)
-
-    if last_log_file is None:
-        logging.info('Не обнаружено ни одного файла log-а')
-        return None
-
-    if is_report_exist(log_date=last_log_file.date, report_dir=report_dir):
-        logging.info(f'Для log-а с датой {last_log_file.date} найден ранее сформированный отчет')
-        return None
-
-    return IOWithDate(
-        io=open(last_log_file.name) if last_log_file.name[-3:] == 'gz' else gzip.open(last_log_file.name),
-        date=last_log_file.date,
-    )
-
-
 def read_and_parse_log_file_io(
         log_file_io: IO,
         report_size: int,
@@ -149,10 +138,9 @@ def read_and_parse_log_file_io(
     count_parsing_error = 0
 
     with TextIOWrapper(log_file_io) as f:
-        while len(requests_time_by_url) < report_size:
+        while True:
             line = f.readline()
             if not line:
-                logging.info(f'В log файле url-ов меньше {report_size}')
                 break
             count_lines += 1
             parsed_line = parse_log_line(line)
@@ -174,30 +162,12 @@ def read_and_parse_log_file_io(
         return None
 
     logging.info(f'Парсинг успешно завершен, ошибок парсинга: {count_parsing_error}')
-    return ParsedLog(requests_times_by_url=requests_time_by_url,
-                     sum_count_requests=count_requests,
-                     sum_requests_time=sum_time)
-
-
-def is_report_exist(log_date, report_dir: str) -> bool:
-    """
-    Проверяет существует ли уже отчет для log-а с самой последней датой
-    """
-    report_dir = Path(__file__).parent / report_dir
-
-    if not report_dir.exists():
-        return False
-
-    # sample report_name: "report-2017.06.30.html"
-    report_name = f"report-{log_date[:4]}.{log_date[4:6]}.{log_date[6:]}.html"
-
-    for file_name in report_dir.iterdir():
-        if not file_name.is_file():
-            continue
-        if file_name.name == report_name:
-            return True
-
-    return False
+    return ParsedLog(
+        requests_times_by_url=sorted(requests_time_by_url.items(),
+                                     key=lambda item: sum(item[1]),
+                                     reverse=True)[:report_size],
+        sum_count_requests=count_requests,
+        sum_requests_time=sum_time)
 
 
 def parse_log_line(line: str) -> Union[ParsedLine, None]:
@@ -216,7 +186,7 @@ def parse_log_line(line: str) -> Union[ParsedLine, None]:
 
 
 def make_stats_table(
-        log_data: Dict[str, List[float]],
+        log_data: Tuple[str, List[float]],
         count_requests: int,
         sum_requests_time: float
 ) -> List[Dict[str, str]]:
@@ -224,7 +194,7 @@ def make_stats_table(
     Формирует таблицу статистики по запросам
     """
     stats_table = []
-    for url, times in log_data.items():
+    for url, times in log_data:
         stats_table.append(
             {'url': url,
              **calc_stats(times=times,
@@ -278,4 +248,4 @@ def render_and_save_report(table: List[Dict], path_to_report: str):
 
 
 if __name__ == "__main__":
-    main(config)
+    main(config.copy())

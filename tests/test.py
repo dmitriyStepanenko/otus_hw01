@@ -9,12 +9,10 @@ from log_analyzer import get_last_log_file_name
 from log_analyzer import ParsedLine
 from log_analyzer import FileNameWithDate
 from log_analyzer import main
-from log_analyzer import is_report_exist
 from log_analyzer import render_and_save_report
 from log_analyzer import calc_stats
 from log_analyzer import make_stats_table
 from log_analyzer import update_configuration
-from log_analyzer import get_log_file_io
 from log_analyzer import ParsedLog
 from log_analyzer import read_and_parse_log_file_io
 
@@ -40,10 +38,11 @@ class TestLogAnalyzer(unittest.TestCase):
         new_config.set('settings', "PERCENT_PARSING_ERRORS", "3")
         new_config.set('settings', 'LOG_FILE_PATH', './own_log')
 
-        with open('config.txt', 'w') as f:
+        path_to_config = Path(__file__).parent / 'config.txt'
+        with open(path_to_config, 'w') as f:
             new_config.write(f)
 
-        with patch.object(sys, 'argv', ['', '', '--config']):
+        with patch.object(sys, 'argv', ['--config tests/config.txt']):
             configuration = update_configuration(configuration={
                 "REPORT_DIR": "./_reports",
                 "LOG_DIR": "./_log",
@@ -70,25 +69,6 @@ class TestLogAnalyzer(unittest.TestCase):
             ),
             get_last_log_file_name('./log')
         )
-
-    def test_get_log_file_io(self):
-        self.assertEqual(None, get_log_file_io('./aaa', './reports'))
-        self.assertEqual(None, get_log_file_io('./reports', './aa'))
-        self.assertEqual(None, get_log_file_io('./log', './reports'))
-
-    def test_read_and_parse_file(self):
-        file_name = (Path(__file__).parent.parent / 'log' / 'nginx-access-ui.log-20170630.gz').__str__()
-        io_file = get_log_file_io('./log', './log')
-        parsed_log = read_and_parse_log_file_io(io_file.io, 1, 1)
-        self.assertEqual(ParsedLog(requests_times_by_url={'/api/v2/banner/25019354': [0.39]},
-                                   sum_requests_time=0.39,
-                                   sum_count_requests=1),
-                         parsed_log)
-
-    def test_is_report_exist(self):
-        self.assertFalse(is_report_exist('10001010', './reports'))
-        self.assertTrue(is_report_exist('20170630', './reports'))
-        self.assertFalse(is_report_exist('0', './reps'))
 
     def test_parse_log_line(self):
         self.assertEqual(None, parse_log_line(line=''))
