@@ -186,7 +186,7 @@ def parse_log_line(line: str) -> Union[ParsedLine, None]:
 
 
 def make_stats_table(
-        log_data: Tuple[str, List[float]],
+        log_data: List[Tuple[str, List[float]]],
         count_requests: int,
         sum_requests_time: float
 ) -> List[Dict[str, str]]:

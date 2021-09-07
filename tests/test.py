@@ -1,5 +1,4 @@
 import configparser
-import gzip
 import sys
 import unittest
 from unittest.mock import patch
@@ -13,8 +12,6 @@ from log_analyzer import render_and_save_report
 from log_analyzer import calc_stats
 from log_analyzer import make_stats_table
 from log_analyzer import update_configuration
-from log_analyzer import ParsedLog
-from log_analyzer import read_and_parse_log_file_io
 
 
 class TestLogAnalyzer(unittest.TestCase):
@@ -97,8 +94,8 @@ class TestLogAnalyzer(unittest.TestCase):
              'time_med': round(0.3, 3)
              }
         ]
-        self.assertEqual(table, make_stats_table(log_data={'url1': [0.1, 0.1],
-                                                           'url2': [0.3]},
+        self.assertEqual(table, make_stats_table(log_data=[('url1', [0.1, 0.1]),
+                                                           ('url2', [0.3])],
                                                  count_requests=3, sum_requests_time=0.5))
 
     def test_calc_stats(self):
