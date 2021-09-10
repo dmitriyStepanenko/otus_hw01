@@ -1,4 +1,5 @@
 import configparser
+import datetime
 import sys
 import unittest
 from unittest.mock import patch
@@ -39,13 +40,15 @@ class TestLogAnalyzer(unittest.TestCase):
         with open(path_to_config, 'w') as f:
             new_config.write(f)
 
-        with patch.object(sys, 'argv', ['--config tests/config.txt']):
-            configuration = update_configuration(configuration={
+        configuration = update_configuration(
+            default_configuration={
                 "REPORT_DIR": "./_reports",
                 "LOG_DIR": "./_log",
                 "PERCENT_PARSING_ERRORS": 10,
                 'LOG_FILE_PATH': None
-            })
+            },
+            path_to_config=path_to_config.__str__()
+        )
         self.assertEqual(
             {
                 "REPORT_SIZE": 5,
@@ -62,7 +65,7 @@ class TestLogAnalyzer(unittest.TestCase):
         self.assertEqual(
             FileNameWithDate(
                 name=(Path(__file__).parent.parent / 'log' / 'nginx-access-ui.log-20170630.gz').__str__(),
-                date='20170630',
+                date=datetime.datetime(2017, 6, 30, 0, 0),
             ),
             get_last_log_file_name('./log')
         )

@@ -6,15 +6,18 @@
 #                     '$status $body_bytes_sent "$http_referer" '
 #                     '"$http_user_agent" "$http_x_forwarded_for" "$http_X_REQUEST_ID" "$http_X_RB_USER" '
 #                     '$request_time';
+import datetime
 import gzip
 import json
 import argparse
+import re
 from configparser import ConfigParser
 from string import Template
 from collections import defaultdict, namedtuple
-from typing import Dict, List, IO, Union, Tuple
+from typing import Dict, List, Union, Tuple, Callable
 from pathlib import Path
 from io import TextIOWrapper
+from datetime import datetime
 import logging
 
 config = {
@@ -34,7 +37,8 @@ ParsedLine = namedtuple('ParsedLine', ['url', 'request_time'])
 
 def main(configuration: Dict):
     try:
-        configuration = update_configuration(configuration)
+        args = parse_sys_args()
+        configuration = update_configuration(configuration, args.config)
         logging.basicConfig(
             format='[%(asctime)s] %(levelname).1s %(message)s',
             filename=configuration.get('LOG_FILE_PATH'),
@@ -42,50 +46,53 @@ def main(configuration: Dict):
         )
 
         last_log_file = get_last_log_file_name(log_dir=configuration['LOG_DIR'])
-        last_date = last_log_file.date
-        report_name = f"report-{last_date[:4]}.{last_date[4:6]}.{last_date[6:]}.html"
 
         if last_log_file is None:
             logging.info('Не обнаружено ни одного файла log-а')
 
-        elif (Path(__file__).parent / configuration['REPORT_DIR'] / report_name).exists():
-            logging.info(f'Для log-а с датой {last_log_file.date} найден ранее сформированный отчет')
-
         else:
-            parsed_log = read_and_parse_log_file_io(
-                log_file_io=open(last_log_file.name)
-                if last_log_file.name[-3:] == 'gz' else gzip.open(last_log_file.name),
-                report_size=configuration['REPORT_SIZE'],
-                max_rel_parsing_errors=configuration['PERCENT_PARSING_ERRORS'])
+            last_date: datetime = last_log_file.date
+            report_name = f"report-{last_date.strftime('%Y.%m.%d')}.html"
+            if (Path(__file__).parent / configuration['REPORT_DIR'] / report_name).exists():
+                logging.info(f'Для log-а с датой {last_date} найден ранее сформированный отчет')
 
-            table = make_stats_table(log_data=parsed_log.requests_times_by_url,
-                                     count_requests=parsed_log.sum_count_requests,
-                                     sum_requests_time=parsed_log.sum_requests_time)
-            render_and_save_report(
-                table=table,
-                path_to_report=(Path(configuration['REPORT_DIR']) / report_name).__str__())
+            else:
+                parsed_log = read_and_parse_log_file(
+                    log_file_name=last_log_file.name,
+                    report_size=configuration['REPORT_SIZE'],
+                    max_rel_parsing_errors=configuration['PERCENT_PARSING_ERRORS'],
+                    line_parser=parse_log_line
+                )
 
-    except FileExistsError as e:
-        logging.error(e)
+                table = make_stats_table(log_data=parsed_log.requests_times_by_url,
+                                         count_requests=parsed_log.sum_count_requests,
+                                         sum_requests_time=parsed_log.sum_requests_time)
+                render_and_save_report(
+                    table=table,
+                    path_to_report=(Path(configuration['REPORT_DIR']) / report_name).__str__())
 
-    except Exception:
-        logging.exception("Непредвиденная ошибка")
+    except Exception as e:
+        logging.exception(e if e.args else "Непредвиденная ошибка")
+        raise
 
 
-def update_configuration(configuration: Dict) -> Dict:
+def parse_sys_args():
     argparser = argparse.ArgumentParser()
     argparser.add_argument('--config', type=str, default=DEFAULT_CONFIG_PATH)
-    args = argparser.parse_args()
+    return argparser.parse_args()
+
+
+def update_configuration(default_configuration: Dict, path_to_config: str) -> Dict:
     config_from_file = ConfigParser()
     found_config = config_from_file.read(
-        filenames=DEFAULT_CONFIG_PATH if args.config is not None else args.config,
+        filenames=DEFAULT_CONFIG_PATH if path_to_config is not None else path_to_config,
         encoding='utf-8')
     if not found_config:
         raise FileExistsError(f'Не найден файл конфигурации "{DEFAULT_CONFIG_PATH}"')
     for key, val in config_from_file['settings'].items():
-        configuration[key.upper()] = int(val) if key.upper() in INT_SETTINGS else val
+        default_configuration[key.upper()] = int(val) if key.upper() in INT_SETTINGS else val
 
-    return configuration
+    return default_configuration
 
 
 def get_last_log_file_name(log_dir: str) -> Union[FileNameWithDate, None]:
@@ -97,36 +104,29 @@ def get_last_log_file_name(log_dir: str) -> Union[FileNameWithDate, None]:
     if not log_dir.exists():
         return None
 
-    prefix_file_name = 'nginx-access-ui.log-'
-    date_format = 'yyyymmdd'
-    slice_prefix = slice(len(prefix_file_name))
-    slice_date = slice(len(prefix_file_name), len(prefix_file_name) + len(date_format))
-    slice_format = slice(len(prefix_file_name) + len(date_format), 0)
-
-    last_log_date = 0
+    last_log_date = datetime.min
     last_log_file = None
     for file_name in log_dir.iterdir():
         if not file_name.is_file():
             continue
 
-        str_file_name = file_name.name
-
-        if str_file_name[slice_prefix] != prefix_file_name or \
-                str_file_name[slice_format] not in ['', '.gz'] or \
-                not str_file_name[slice_date].isdigit():
+        log_file_re = re.match(r'^nginx-access-ui\.log-(?P<date>\d{8})(\.gz)?$', file_name.name)
+        if log_file_re is None:
             continue
-        log_date = int(str_file_name[slice_date])
+
+        log_date = datetime.strptime(log_file_re.group('date'), '%Y%m%d')
         if log_date > last_log_date:
             last_log_date = log_date
             last_log_file = file_name
 
-    return FileNameWithDate(name=last_log_file.__str__(), date=str(last_log_date)) if last_log_file else None
+    return FileNameWithDate(name=last_log_file.__str__(), date=last_log_date) if last_log_file else None
 
 
-def read_and_parse_log_file_io(
-        log_file_io: IO,
+def read_and_parse_log_file(
+        log_file_name: str,
         report_size: int,
-        max_rel_parsing_errors: float
+        max_rel_parsing_errors: float,
+        line_parser: Callable
 ) -> Union[ParsedLog, None]:
     """
     Читает данные из файла log-а и парсит их
@@ -137,29 +137,29 @@ def read_and_parse_log_file_io(
     count_lines = 0
     count_parsing_error = 0
 
-    with TextIOWrapper(log_file_io) as f:
-        while True:
-            line = f.readline()
-            if not line:
-                break
-            count_lines += 1
-            parsed_line = parse_log_line(line)
-            if parsed_line is None:
-                count_parsing_error += 1
-                continue
-            url, request_time = parsed_line
-            count_requests += 1
-            sum_time += request_time
-            requests_time_by_url[url].append(request_time)
+    with open(log_file_name) if log_file_name[-3:] == 'gz' else gzip.open(log_file_name) as log_file_io:
+        with TextIOWrapper(log_file_io) as f:
+            for _ in range(100000): #while True:
+                line = f.readline()
+                if not line:
+                    break
+                count_lines += 1
+                parsed_line = line_parser(line)
+                if parsed_line is None:
+                    count_parsing_error += 1
+                    continue
+                url, request_time = parsed_line
+                count_requests += 1
+                sum_time += request_time
+                requests_time_by_url[url].append(request_time)
 
     if count_lines == 0:
         logging.info('Файл log-а пуст')
         return None
 
     if count_parsing_error / count_lines > max_rel_parsing_errors:
-        logging.error(f'Процент ошибок парсинга log-а превышает допустимый '
-                      f'установленный уровень в {max_rel_parsing_errors}%')
-        return None
+        raise ValueError(f'Процент ошибок парсинга log-а превышает допустимый '
+                         f'установленный уровень в {max_rel_parsing_errors}%')
 
     logging.info(f'Парсинг успешно завершен, ошибок парсинга: {count_parsing_error}')
     return ParsedLog(
