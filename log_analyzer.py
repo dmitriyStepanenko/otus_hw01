@@ -49,27 +49,28 @@ def main(configuration: Dict):
 
         if last_log_file is None:
             logging.info('Не обнаружено ни одного файла log-а')
+            return
 
-        else:
-            last_date: datetime = last_log_file.date
-            report_name = f"report-{last_date.strftime('%Y.%m.%d')}.html"
-            if (Path(__file__).parent / configuration['REPORT_DIR'] / report_name).exists():
-                logging.info(f'Для log-а с датой {last_date} найден ранее сформированный отчет')
+        last_date: datetime = last_log_file.date
+        report_name = f"report-{last_date.strftime('%Y.%m.%d')}.html"
 
-            else:
-                parsed_log = read_and_parse_log_file(
-                    log_file_name=last_log_file.name,
-                    report_size=configuration['REPORT_SIZE'],
-                    max_rel_parsing_errors=configuration['PERCENT_PARSING_ERRORS'],
-                    line_parser=parse_log_line
-                )
+        if (Path(__file__).parent / configuration['REPORT_DIR'] / report_name).exists():
+            logging.info(f'Для log-а с датой {last_date} найден ранее сформированный отчет')
+            return
 
-                table = make_stats_table(log_data=parsed_log.requests_times_by_url,
-                                         count_requests=parsed_log.sum_count_requests,
-                                         sum_requests_time=parsed_log.sum_requests_time)
-                render_and_save_report(
-                    table=table,
-                    path_to_report=(Path(configuration['REPORT_DIR']) / report_name).__str__())
+        parsed_log = read_and_parse_log_file(
+            log_file_name=last_log_file.name,
+            report_size=configuration['REPORT_SIZE'],
+            max_rel_parsing_errors=configuration['PERCENT_PARSING_ERRORS'],
+            line_parser=parse_log_line
+        )
+
+        table = make_stats_table(log_data=parsed_log.requests_times_by_url,
+                                 count_requests=parsed_log.sum_count_requests,
+                                 sum_requests_time=parsed_log.sum_requests_time)
+        render_and_save_report(
+            table=table,
+            path_to_report=str(Path(configuration['REPORT_DIR']) / report_name))
 
     except Exception as e:
         logging.exception(e if e.args else "Непредвиденная ошибка")
@@ -114,12 +115,16 @@ def get_last_log_file_name(log_dir: str) -> Union[FileNameWithDate, None]:
         if log_file_re is None:
             continue
 
-        log_date = datetime.strptime(log_file_re.group('date'), '%Y%m%d')
+        try:
+            log_date = datetime.strptime(log_file_re.group('date'), '%Y%m%d')
+        except Exception:
+            continue
+
         if log_date > last_log_date:
             last_log_date = log_date
             last_log_file = file_name
 
-    return FileNameWithDate(name=last_log_file.__str__(), date=last_log_date) if last_log_file else None
+    return FileNameWithDate(name=str(last_log_file), date=last_log_date) if last_log_file else None
 
 
 def read_and_parse_log_file(
@@ -139,7 +144,7 @@ def read_and_parse_log_file(
 
     with open(log_file_name) if log_file_name[-3:] == 'gz' else gzip.open(log_file_name) as log_file_io:
         with TextIOWrapper(log_file_io) as f:
-            for _ in range(100000): #while True:
+            while True:
                 line = f.readline()
                 if not line:
                     break
